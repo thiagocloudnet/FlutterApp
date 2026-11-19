@@ -1,11 +1,5 @@
 {
-  "name": "Flutter + Firebase (UESB Mobile)",
-  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
-  "features": {
-    "ghcr.io/devcontainers/features/node:1": {
-      "version": "lts"
-    },
-    "ghcr.io/devcontainers-community/features/flutter:1": {}
-  },
+  "name": "FlutterApp — Firebase & Codespaces (UESB Mobile)",
+  "image": "mcr.microsoft.com/devcontainers/universal:2",
   "postCreateCommand": "npm install -g firebase-tools && firebase --version"
 }
