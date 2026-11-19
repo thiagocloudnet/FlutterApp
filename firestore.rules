@@ -1,0 +1,211 @@
+rules_version = '2';
+
+// =====================================================================
+// Regras de Segurança do Cloud Firestore — Projeto FlutterApp (UESB)
+// Projeto Firebase: flutter-app-3883
+// Disciplina: Desenvolvimento Mobile I — UESB
+// =====================================================================
+//
+// =====================================================================
+// Modelo de Dados Assumido (Assumed Data Model)
+// =====================================================================
+//
+// 1. Coleção: usuarios/{userId}
+//    ID do Documento: UID do usuário autenticado (request.auth.uid)
+//    Campos:
+//      - uid: string (obrigatório, imutável, igual a userId, 1..128 chars)
+//      - nome: string (obrigatório, 1..100 chars)
+//      - email: string (opcional, formato de e-mail válido, max 254 chars)
+//      - matricula: string (opcional, 1..30 chars)
+//      - createdAt: timestamp (obrigatório, imutável, recente na criação)
+//      - updatedAt: timestamp (opcional, recente)
+//
+// 2. Coleção: tarefas/{tarefaId}
+//    ID do Documento: ID automático ou definido pelo cliente
+//    Campos:
+//      - ownerId: string (obrigatório, imutável, igual a request.auth.uid)
+//      - titulo: string (obrigatório, 1..120 chars)
+//      - descricao: string (opcional, 0..1000 chars)
+//      - concluida: bool (obrigatório)
+//      - status: string (opcional, valores: 'pendente', 'em_andamento', 'concluida')
+//      - createdAt: timestamp (obrigatório, imutável, recente na criação)
+//      - updatedAt: timestamp (opcional, recente)
+//
+// 3. Coleção: itens/{itemId}
+//    ID do Documento: ID automático ou definido pelo cliente
+//    Campos:
+//      - ownerId: string (obrigatório, imutável, igual a request.auth.uid)
+//      - nome: string (obrigatório, 1..120 chars)
+//      - categoria: string (opcional, 1..60 chars)
+//      - quantidade: int (opcional, entre 0 e 100000)
+//      - ativo: bool (opcional)
+//      - createdAt: timestamp (obrigatório, imutável, recente na criação)
+//      - updatedAt: timestamp (opcional, recente)
+//
+// =====================================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // =================================================================
+    // Regra Padrão de Negação (Default Deny)
+    // Bloqueia qualquer leitura ou escrita em coleções não mapeadas.
+    // =================================================================
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // =================================================================
+    // Funções Auxiliares (Helper Functions)
+    // =================================================================
+
+    // Verifica se o usuário está autenticado via Firebase Auth
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Verifica se o usuário autenticado é o dono do recurso pelo userId
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // Verifica se o usuário autenticado é o dono do documento via campo ownerId
+    function isDocOwner() {
+      return isAuthenticated() && request.auth.uid == resource.data.ownerId;
+    }
+
+    // Verifica se todos os campos obrigatórios estão presentes no documento
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    // Garante esquema estrito: apenas os campos permitidos podem existir
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    // Valida tipo string e limites mínimo/máximo de tamanho (previne DoS de 1 MB)
+    function validStringLength(field, minLen, maxLen) {
+      return request.resource.data[field] is string &&
+             request.resource.data[field].size() >= minLen &&
+             request.resource.data[field].size() <= maxLen;
+    }
+
+    // Valida string opcional (se ausente é válida; se presente, checa tipo e tamanho)
+    function isValidOptionalString(field, minLen, maxLen) {
+      return !(field in request.resource.data) ||
+             validStringLength(field, minLen, maxLen);
+    }
+
+    // Valida formato básico de e-mail
+    function isValidEmail(email) {
+      return email is string &&
+             email.size() <= 254 &&
+             email.matches('^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$');
+    }
+
+    // Valida que um timestamp é recente (até 5 minutos atrás e não no futuro)
+    function isRecent(time) {
+      return time is timestamp &&
+             time > request.time - duration.value(5, 'm') &&
+             time <= request.time;
+    }
+
+    // Garante que campos imutáveis não foram alterados em operações de update
+    function areImmutableFieldsUnchanged(fields) {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(fields);
+    }
+
+    // =================================================================
+    // Validadores de Domínio (usados em create e update)
+    // =================================================================
+
+    // Valida os dados do perfil de usuário em usuarios/{userId}
+    function isValidUsuario(data, userId) {
+      return hasOnlyAllowedFields(['uid', 'nome', 'email', 'matricula', 'createdAt', 'updatedAt']) &&
+             hasRequiredFields(['uid', 'nome', 'createdAt']) &&
+             data.uid is string &&
+             data.uid == userId &&
+             data.uid.size() >= 1 &&
+             data.uid.size() <= 128 &&
+             validStringLength('nome', 1, 100) &&
+             (!('email' in data) || isValidEmail(data.email)) &&
+             isValidOptionalString('matricula', 1, 30) &&
+             data.createdAt is timestamp &&
+             (!('updatedAt' in data) || isRecent(data.updatedAt));
+    }
+
+    // Valida os dados de uma tarefa em tarefas/{tarefaId}
+    function isValidTarefa(data) {
+      return hasOnlyAllowedFields(['ownerId', 'titulo', 'descricao', 'concluida', 'status', 'createdAt', 'updatedAt']) &&
+             hasRequiredFields(['ownerId', 'titulo', 'concluida', 'createdAt']) &&
+             data.ownerId is string &&
+             data.ownerId.size() >= 1 &&
+             data.ownerId.size() <= 128 &&
+             validStringLength('titulo', 1, 120) &&
+             isValidOptionalString('descricao', 0, 1000) &&
+             data.concluida is bool &&
+             (!('status' in data) || data.status in ['pendente', 'em_andamento', 'concluida']) &&
+             data.createdAt is timestamp &&
+             (!('updatedAt' in data) || isRecent(data.updatedAt));
+    }
+
+    // Valida os dados de um item em itens/{itemId}
+    function isValidItem(data) {
+      return hasOnlyAllowedFields(['ownerId', 'nome', 'categoria', 'quantidade', 'ativo', 'createdAt', 'updatedAt']) &&
+             hasRequiredFields(['ownerId', 'nome', 'createdAt']) &&
+             data.ownerId is string &&
+             data.ownerId.size() >= 1 &&
+             data.ownerId.size() <= 128 &&
+             validStringLength('nome', 1, 120) &&
+             isValidOptionalString('categoria', 1, 60) &&
+             (!('quantidade' in data) || (data.quantidade is int && data.quantidade >= 0 && data.quantidade <= 100000)) &&
+             (!('ativo' in data) || data.ativo is bool) &&
+             data.createdAt is timestamp &&
+             (!('updatedAt' in data) || isRecent(data.updatedAt));
+    }
+
+    // =================================================================
+    // Regras das Coleções
+    // =================================================================
+
+    // Coleção de usuários: cada usuário autenticado acessa apenas o próprio documento.
+    // Protege dados pessoais (PII) como e-mail e matrícula contra leitura por terceiros.
+    match /usuarios/{userId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) &&
+                       isValidUsuario(request.resource.data, userId) &&
+                       isRecent(request.resource.data.createdAt);
+      allow update: if isOwner(userId) &&
+                       isValidUsuario(request.resource.data, userId) &&
+                       areImmutableFieldsUnchanged(['uid', 'createdAt']);
+      allow delete: if isOwner(userId);
+    }
+
+    // Coleção de tarefas de estudo: leitura, criação, atualização e remoção
+    // restritas ao proprietário (ownerId == request.auth.uid).
+    match /tarefas/{tarefaId} {
+      allow read: if isDocOwner();
+      allow create: if isOwner(request.resource.data.ownerId) &&
+                       isValidTarefa(request.resource.data) &&
+                       isRecent(request.resource.data.createdAt);
+      allow update: if isDocOwner() &&
+                       isValidTarefa(request.resource.data) &&
+                       areImmutableFieldsUnchanged(['ownerId', 'createdAt']);
+      allow delete: if isDocOwner();
+    }
+
+    // Coleção genérica de itens de estudo: leitura, criação, atualização e remoção
+    // restritas ao proprietário (ownerId == request.auth.uid).
+    match /itens/{itemId} {
+      allow read: if isDocOwner();
+      allow create: if isOwner(request.resource.data.ownerId) &&
+                       isValidItem(request.resource.data) &&
+                       isRecent(request.resource.data.createdAt);
+      allow update: if isDocOwner() &&
+                       isValidItem(request.resource.data) &&
+                       areImmutableFieldsUnchanged(['ownerId', 'createdAt']);
+      allow delete: if isDocOwner();
+    }
+  }
+}
